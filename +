@@ -1,0 +1,6 @@
+apiVersion: apigateway.cw.com/v1beta1
+kind: ApiGateway
+metadata:
+  name: apigateway-example2
+spec:
+  foo: bar
