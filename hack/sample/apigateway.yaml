@@ -1,6 +1,7 @@
 apiVersion: apigateway.cw.com/v1beta1
 kind: ApiGateway
 metadata:
-  name: apigateway-example3
+  name: apigateway-example2
 spec:
+  IngressName: "apigateway-example2-ingress"
   foo: bar

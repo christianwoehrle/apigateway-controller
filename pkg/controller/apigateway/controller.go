@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
@@ -86,7 +87,7 @@ func (bc *ApiGatewayController) Reconcile(k types.ReconcileKey) error {
 	log.Printf("Implement the Reconcile function on apigateway.ApiGatewayController to reconcile %s\n", k.Name)
 
 	// Get the deployment with the name specified in Foo.spec
-	ingress, err := bc.KubernetesInformers.Extensions().V1beta1().Ingresses().Lister().Ingresses(k.Namespace).Get(k.Name)
+	ingress, err := bc.KubernetesInformers.Extensions().V1beta1().Ingresses().Lister().Ingresses(k.Namespace).Get(ingressName)
 	// If the resource doesn't exist, we'll create it
 	if errors.IsNotFound(err) {
 		ingress, err = bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(k.Namespace).Create(newIngress(apigw))
@@ -111,7 +112,7 @@ func (bc *ApiGatewayController) Reconcile(k types.ReconcileKey) error {
 	// number does not equal the current desired replicas on the Deployment, we
 	// should update the Deployment resource.
 
-	ingressLabel := ingress.Labels["sericeLabel"]
+	ingressLabel := ingress.Labels[ServiceLabel]
 	if apigw.Spec.ServiceLabel != "" && apigw.Spec.ServiceLabel != ingressLabel {
 		glog.V(4).Infof("Foo %s replicas: %d, ServiceLabel: %d", apigw.Name, apigw.Spec.ServiceLabel, ingressLabel)
 		ingress, err = bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(apigw.Namespace).Update(newIngress(apigw))
@@ -137,6 +138,7 @@ func (bc *ApiGatewayController) Reconcile(k types.ReconcileKey) error {
 
 // +kubebuilder:controller:group=apigateway,version=v1beta1,kind=ApiGateway,resource=apigateways
 // +kubebuilder:informers:group=core,version=v1,kind=Service
+// +kubebuilder:informers:group=core,version=v1,kind=Ingress
 // +kubebuilder:informers:group=core,version=v1,kind=Pod
 type ApiGatewayController struct {
 	// INSERT ADDITIONAL FIELDS HERE
@@ -210,16 +212,21 @@ func ProvideController(arguments args.InjectArgs) (*controller.GenericController
 func (bc ApiGatewayController) AddService(obj interface{}) {
 	fmt.Printf("Service 1 Added %v \n %T\n", obj, obj)
 	//q.AddRateLimited(eventhandlers.MapToSelf(obj))
-	service, ok := obj.(corev1.Service)
+	service, ok := obj.(*corev1.Service)
 	if !ok {
-		fmt.Println("Not of Type Service %T", obj)
+		fmt.Printf("Not of Type Service %T\n", obj)
 		return
 
 	}
+	fmt.Printf("Type Service %T\n", obj)
+
 	val, ok := service.Labels[ServiceLabel]
+
 	if !ok {
+		fmt.Printf("Not Service Label there, skip processing event\n")
 		return
 	}
+
 	fmt.Printf("Value of %s: %s\n", ServiceLabel, val)
 
 	ingresses, ret := bc.KubernetesInformers.Extensions().V1beta1().Ingresses().Lister().Ingresses(service.Namespace).List(selector{})
@@ -272,7 +279,7 @@ func newIngress(apigw *apigatewayv1beta1.ApiGateway) *v1beta1.Ingress {
 	}
 	return &v1beta1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      apigw.Name,
+			Name:      apigw.Spec.IngressName,
 			Namespace: apigw.Namespace,
 			Labels:    labels,
 			OwnerReferences: []metav1.OwnerReference{
@@ -283,8 +290,27 @@ func newIngress(apigw *apigatewayv1beta1.ApiGateway) *v1beta1.Ingress {
 				}),
 			},
 		},
-		//		Spec: v1beta1.Ingress{
-		//
-		//		},
+		Spec: v1beta1.IngressSpec{
+			Rules: []v1beta1.IngressRule{
+				v1beta1.IngressRule{
+					"testhost",
+					v1beta1.IngressRuleValue{
+						HTTP: &v1beta1.HTTPIngressRuleValue{
+							Paths: []v1beta1.HTTPIngressPath{
+								v1beta1.HTTPIngressPath{
+									Path: "/test",
+									Backend: v1beta1.IngressBackend{
+										ServiceName: "dummyservice-name",
+										ServicePort: intstr.IntOrString{
+											IntVal: 80,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 }
