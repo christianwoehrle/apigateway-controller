@@ -138,7 +138,7 @@ func (bc *ApiGatewayController) Reconcile(k types.ReconcileKey) error {
 
 // +kubebuilder:controller:group=apigateway,version=v1beta1,kind=ApiGateway,resource=apigateways
 // +kubebuilder:informers:group=core,version=v1,kind=Service
-// +kubebuilder:informers:group=core,version=v1,kind=Ingress
+// +kubebuilder:informers:group=extensions,version=v1beta1,kind=Ingress
 // +kubebuilder:informers:group=core,version=v1,kind=Pod
 type ApiGatewayController struct {
 	// INSERT ADDITIONAL FIELDS HERE

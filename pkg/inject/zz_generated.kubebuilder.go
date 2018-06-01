@@ -7,6 +7,7 @@ import (
 	"github.com/christianwoehrle/apigateway-controller/pkg/inject/args"
 	"github.com/kubernetes-sigs/kubebuilder/pkg/inject/run"
 	corev1 "k8s.io/api/core/v1"
+	extensionsv1beta1 "k8s.io/api/extensions/v1beta1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -24,7 +25,13 @@ func init() {
 		}
 
 		// Add Kubernetes informers
+		if err := arguments.ControllerManager.AddInformerProvider(&corev1.Pod{}, arguments.KubernetesInformers.Core().V1().Pods()); err != nil {
+			return err
+		}
 		if err := arguments.ControllerManager.AddInformerProvider(&corev1.Service{}, arguments.KubernetesInformers.Core().V1().Services()); err != nil {
+			return err
+		}
+		if err := arguments.ControllerManager.AddInformerProvider(&extensionsv1beta1.Ingress{}, arguments.KubernetesInformers.Extensions().V1beta1().Ingresses()); err != nil {
 			return err
 		}
 
