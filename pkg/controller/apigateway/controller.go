@@ -45,6 +45,12 @@ const (
 	// Every Time a Service with a Label ServiceLabel and the same value is created/updated/deleted
 	// the ingress adds/updates/deleted the handling of this service
 	ServiceLabel = "ServiceLabel"
+	// Hostname is the Hostname, through which a Service wants to be available
+	// A Service specifies the hostname through the label Hostname
+	SericeHostname = "ServiceHostname"
+	// ServicePath is the Path through which a Service wants to be available
+	// A Service specifies the path through the label ServicePath
+	ServicePath = "ServicePath"
 )
 
 // EDIT THIS FILE
@@ -54,23 +60,16 @@ const (
 // Reconcile compares the actual state with the desired, and attempts to
 // converge the two. It then updates the Status block of the Foo resource
 // with the current status of the resource.
-func (bc *ApiGatewayController) ReconcileService(k types.ReconcileKey) error {
-	log.Printf("-------> Chrissis reconcileService Methode: %v %T %s %s", k, k, k.Namespace, k.Name)
-	//apigw, err := bc.apigatewayLister.ApiGateways(k.Namespace).Get(k.Name)
-	return nil
-}
-
-// Reconcile compares the actual state with the desired, and attempts to
-// converge the two. It then updates the Status block of the Foo resource
-// with the current status of the resource.
 func (bc *ApiGatewayController) Reconcile(k types.ReconcileKey) error {
 	// INSERT YOUR CODE HERE
-	log.Printf("Chrissis reconcile Methode: %v %T %s %s", k, k, k.Namespace, k.Name)
+	log.Printf("Reconcile Methode: %T Namespace: %s  Name: %s", k, k.Namespace, k.Name)
 	apigw, err := bc.apigatewayLister.ApiGateways(k.Namespace).Get(k.Name)
-	log.Printf("err: %v \n apigw %v", err, apigw)
-
+	if err != nil {
+		log.Printf("Couldn't get an ApiGateway with name: %s, Error: %v", k.Name, err)
+	}
 	apigw, err = bc.Informers.Apigateway().V1beta1().ApiGateways().Lister().ApiGateways(k.Namespace).Get(k.Name)
 	if apigw == nil {
+		log.Printf("Couldn't get an ApiGateway with name: %s, Error: %v", k.Name, err)
 		return nil
 	}
 	ingressName := apigw.Spec.IngressName
@@ -83,8 +82,7 @@ func (bc *ApiGatewayController) Reconcile(k types.ReconcileKey) error {
 		return nil
 	}
 
-	log.Printf("err: %v \n apigw %v", err, apigw)
-	log.Printf("Implement the Reconcile function on apigateway.ApiGatewayController to reconcile %s\n", k.Name)
+	log.Printf("apigw found for Name:", apigw.Name)
 
 	// Get the deployment with the name specified in Foo.spec
 	ingress, err := bc.KubernetesInformers.Extensions().V1beta1().Ingresses().Lister().Ingresses(k.Namespace).Get(ingressName)
@@ -169,7 +167,7 @@ func ProvideController(arguments args.InjectArgs) (*controller.GenericController
 		InformerRegistry: arguments.ControllerManager,
 	}
 
-	log.Printf("watch apigateway")
+	//log.Printf("watch apigateway")
 	if err := gc.Watch(&apigatewayv1beta1.ApiGateway{}); err != nil {
 		return gc, err
 	}
@@ -181,11 +179,11 @@ func ProvideController(arguments args.InjectArgs) (*controller.GenericController
 			return cache.ResourceEventHandlerFuncs{
 				AddFunc: bc.AddService,
 				UpdateFunc: func(old, obj interface{}) {
-					fmt.Printf("Service Updated %v\n %T", obj, obj)
+					log.Printf("Service Updated %v\n %T", obj, obj)
 					//q.AddRateLimited(eventhandlers.MapToSelf(obj))
 				},
 				DeleteFunc: func(obj interface{}) {
-					fmt.Printf("Service Deleted %v\n %T", obj, obj)
+					log.Printf("Service Deleted %v\n %T", obj, obj)
 					//q.AddRateLimited(eventhandlers.MapToSelf(obj))
 				},
 			}
@@ -194,7 +192,7 @@ func ProvideController(arguments args.InjectArgs) (*controller.GenericController
 		log.Fatalf("%v", err)
 	}
 
-	log.Printf("watch services")
+	//log.Printf("watch services")
 	// IMPORTANT:
 	// To watch additional resource types - such as those created by your controller - add gc.Watch* function calls here
 	// Watch function calls will transform each object event into a ApiGateway Key to be reconciled by the controller.
@@ -210,38 +208,48 @@ func ProvideController(arguments args.InjectArgs) (*controller.GenericController
 }
 
 func (bc ApiGatewayController) AddService(obj interface{}) {
-	fmt.Printf("Service 1 Added %v \n %T\n", obj, obj)
+	log.Printf("AddService called for Type %T\n", obj)
 	//q.AddRateLimited(eventhandlers.MapToSelf(obj))
 	service, ok := obj.(*corev1.Service)
 	if !ok {
-		fmt.Printf("Not of Type Service %T\n", obj)
+		log.Printf("Not of Type Service %T\n", obj)
 		return
 
 	}
-	fmt.Printf("Type Service %T\n", obj)
+	log.Printf("Service %s was created in Namespace %s\n", service.Name, service.Namespace)
 
-	val, ok := service.Labels[ServiceLabel]
+	servicelabelval, ok := service.Labels[ServiceLabel]
 
 	if !ok {
-		fmt.Printf("Not Service Label there, skip processing event\n")
+		log.Printf("No Label ServiceLabel in Service, skip processing event\n", service.Name)
 		return
 	}
 
-	fmt.Printf("Value of %s: %s\n", ServiceLabel, val)
+	log.Printf("Value of %s: %s\n", ServiceLabel, servicelabelval)
 
-	ingresses, ret := bc.KubernetesInformers.Extensions().V1beta1().Ingresses().Lister().Ingresses(service.Namespace).List(selector{})
+	ingresses, ret := bc.KubernetesInformers.Extensions().V1beta1().Ingresses().Lister().Ingresses(service.Namespace).List(selector{servicelabelval})
 
-	fmt.Printf("Return Type of List%T", ret)
+	log.Printf("Ingresses  Type of List%T", ret)
 	if ret != nil {
 		return
 	}
-	fmt.Printf("# of ingresses matching %n", len(ingresses))
+	log.Printf("# of ingresses matching ServiceLabel of %d", len(ingresses))
 }
 
-type selector struct{}
+type selector struct {
+	ServiceLabelValue string
+}
 
 func (n selector) Matches(lbls labels.Labels) bool {
-	return lbls.Has(ServiceLabel)
+	value := lbls.Get(ServiceLabel)
+	if value == "" {
+		return false
+	}
+	if value != n.ServiceLabelValue {
+		return false
+	}
+	return true
+
 }
 func (n selector) Empty() bool                                 { return false }
 func (n selector) String() string                              { return "" }
