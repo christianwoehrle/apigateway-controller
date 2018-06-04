@@ -1,0 +1,15 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: ausschluss-service
+  labels:
+    ServiceLabel: service1
+    ServiceHost: chrissishost
+    ServicePath: "chrissispath"
+spec:
+  selector:
+    run: ausschluss-pod
+  ports:
+  - protocol: TCP
+    port: 10001
+    targetPort: ausschluss

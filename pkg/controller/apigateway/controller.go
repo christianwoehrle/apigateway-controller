@@ -5,6 +5,7 @@ import (
 
 	"github.com/kubernetes-sigs/kubebuilder/pkg/controller"
 	"github.com/kubernetes-sigs/kubebuilder/pkg/controller/types"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/record"
 
 	"fmt"
@@ -45,13 +46,28 @@ const (
 	// Every Time a Service with a Label ServiceLabel and the same value is created/updated/deleted
 	// the ingress adds/updates/deleted the handling of this service
 	ServiceLabel = "ServiceLabel"
+
 	// Hostname is the Hostname, through which a Service wants to be available
 	// A Service specifies the hostname through the label Hostname
-	SericeHostname = "ServiceHostname"
+	ServiceHostname = "ServiceHostname"
 	// ServicePath is the Path through which a Service wants to be available
 	// A Service specifies the path through the label ServicePath
 	ServicePath = "ServicePath"
 )
+
+// +kubebuilder:controller:group=apigateway,version=v1beta1,kind=ApiGateway,resource=apigateways
+// +kubebuilder:informers:group=core,version=v1,kind=Service
+// +kubebuilder:informers:group=extensions,version=v1beta1,kind=Ingress
+// +kubebuilder:informers:group=core,version=v1,kind=Pod
+type ApiGatewayController struct {
+	// INSERT ADDITIONAL FIELDS HERE
+	apigatewayLister apigatewayv1beta1lister.ApiGatewayLister
+	apigatewayclient apigatewayv1beta1client.ApigatewayV1beta1Interface
+	// recorder is an event recorder for recording Event resources to the
+	// Kubernetes API.
+	apigatewayrecorder record.EventRecorder
+	args.InjectArgs
+}
 
 // EDIT THIS FILE
 // This files was created by "kubebuilder create resource" for you to edit.
@@ -82,23 +98,24 @@ func (bc *ApiGatewayController) Reconcile(k types.ReconcileKey) error {
 		return nil
 	}
 
-	log.Printf("apigw found for Name:", apigw.Name)
+	log.Printf("apigw found for Name: %s", apigw.Name)
 
 	// Get the deployment with the name specified in Foo.spec
 	ingress, err := bc.KubernetesInformers.Extensions().V1beta1().Ingresses().Lister().Ingresses(k.Namespace).Get(ingressName)
 	// If the resource doesn't exist, we'll create it
 	if errors.IsNotFound(err) {
-		ingress, err = bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(k.Namespace).Create(newIngress(apigw))
+		ingress, err = bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(k.Namespace).Create(newIngress(bc.KubernetesInformers, apigw))
 	}
 
 	// If an error occurs during Get/Create, we'll requeue the item so we can
 	// attempt processing again later. This could have been caused by a
 	// temporary network failure, or any other transient reason.
 	if err != nil {
+		log.Printf("Couldn't create the Ingress: %v", err)
 		return err
 	}
 
-	// If the Deployment is not controlled by this Foo resource, we should log
+	// If the Ingress is not controlled by this Foo resource, we should log
 	// a warning to the event recorder and ret
 	if !metav1.IsControlledBy(ingress, apigw) {
 		msg := fmt.Sprintf(MessageResourceExists, ingress.Name)
@@ -113,7 +130,7 @@ func (bc *ApiGatewayController) Reconcile(k types.ReconcileKey) error {
 	ingressLabel := ingress.Labels[ServiceLabel]
 	if apigw.Spec.ServiceLabel != "" && apigw.Spec.ServiceLabel != ingressLabel {
 		glog.V(4).Infof("Foo %s replicas: %d, ServiceLabel: %d", apigw.Name, apigw.Spec.ServiceLabel, ingressLabel)
-		ingress, err = bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(apigw.Namespace).Update(newIngress(apigw))
+		ingress, err = bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(apigw.Namespace).Update(newIngress(bc.KubernetesInformers, apigw))
 	}
 
 	// If an error occurs during Update, we'll requeue the item so we can
@@ -132,20 +149,6 @@ func (bc *ApiGatewayController) Reconcile(k types.ReconcileKey) error {
 
 	bc.apigatewayrecorder.Event(apigw, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
 	return nil
-}
-
-// +kubebuilder:controller:group=apigateway,version=v1beta1,kind=ApiGateway,resource=apigateways
-// +kubebuilder:informers:group=core,version=v1,kind=Service
-// +kubebuilder:informers:group=extensions,version=v1beta1,kind=Ingress
-// +kubebuilder:informers:group=core,version=v1,kind=Pod
-type ApiGatewayController struct {
-	// INSERT ADDITIONAL FIELDS HERE
-	apigatewayLister apigatewayv1beta1lister.ApiGatewayLister
-	apigatewayclient apigatewayv1beta1client.ApigatewayV1beta1Interface
-	// recorder is an event recorder for recording Event resources to the
-	// Kubernetes API.
-	apigatewayrecorder record.EventRecorder
-	args.InjectArgs
 }
 
 // ProvideController provides a controller that will be run at startup.  Kubebuilder will use codegeneration
@@ -179,11 +182,12 @@ func ProvideController(arguments args.InjectArgs) (*controller.GenericController
 			return cache.ResourceEventHandlerFuncs{
 				AddFunc: bc.AddService,
 				UpdateFunc: func(old, obj interface{}) {
-					log.Printf("Service Updated %v\n %T", obj, obj)
+					log.Printf("Service Updated %T\n", obj)
+					log.Printf("Service Updated %s\n", obj.(*corev1.Service).Name)
 					//q.AddRateLimited(eventhandlers.MapToSelf(obj))
 				},
 				DeleteFunc: func(obj interface{}) {
-					log.Printf("Service Deleted %v\n %T", obj, obj)
+					log.Printf("Service Deleted %s\n", obj.(*corev1.Service).Name)
 					//q.AddRateLimited(eventhandlers.MapToSelf(obj))
 				},
 			}
@@ -221,19 +225,14 @@ func (bc ApiGatewayController) AddService(obj interface{}) {
 	servicelabelval, ok := service.Labels[ServiceLabel]
 
 	if !ok {
-		log.Printf("No Label ServiceLabel in Service, skip processing event\n", service.Name)
+		log.Printf("No Label ServiceLabel in Service, skip processing event for Service: %s\n", service.Name)
 		return
 	}
 
 	log.Printf("Value of %s: %s\n", ServiceLabel, servicelabelval)
 
-	ingresses, ret := bc.KubernetesInformers.Extensions().V1beta1().Ingresses().Lister().Ingresses(service.Namespace).List(selector{servicelabelval})
+	bc.addServiceToIngress(service)
 
-	log.Printf("Ingresses  Type of List%T", ret)
-	if ret != nil {
-		return
-	}
-	log.Printf("# of ingresses matching ServiceLabel of %d", len(ingresses))
 }
 
 type selector struct {
@@ -257,6 +256,11 @@ func (n selector) Add(_ ...labels.Requirement) labels.Selector { return n }
 func (n selector) Requirements() (labels.Requirements, bool)   { return nil, false }
 func (n selector) DeepCopySelector() labels.Selector           { return n }
 
+func (bc ApiGatewayController) lookupIngressesForServiceLabel(namespace string, serviceLabelValue string) ([]*v1beta1.Ingress, error) {
+	ingresses, err := bc.KubernetesInformers.Extensions().V1beta1().Ingresses().Lister().Ingresses(namespace).List(selector{serviceLabelValue})
+	return ingresses, err
+}
+
 // LookupFoo looksup a Foo from the lister
 func (bc ApiGatewayController) LookupFoo(r types.ReconcileKey) (interface{}, error) {
 	return bc.Informers.Apigateway().V1beta1().ApiGateways().Lister().ApiGateways(r.Namespace).Get(r.Name)
@@ -276,16 +280,21 @@ func (bc *ApiGatewayController) updateApigwStatus(apigw apigatewayv1beta1.ApiGat
 	return err
 }
 
-// newDeployment creates a new Deployment for a Foo resource. It also sets
+// newDeployment creates a new Deployment for an ApiGateway resource. It also sets
 // the appropriate OwnerReferences on the resource so handleObject can discover
 // the Foo resource that 'owns' it.
-func newIngress(apigw *apigatewayv1beta1.ApiGateway) *v1beta1.Ingress {
+// For the new INgress, all relevant services are added
+func newIngress(kubernetesInformers informers.SharedInformerFactory, apigw *apigatewayv1beta1.ApiGateway) *v1beta1.Ingress {
+
+	log.Printf("Create new Ingress for apigateway %s", apigw.Name)
+
 	labels := map[string]string{
 		"app":        "nginx",
 		"controller": apigw.Name,
 		ServiceLabel: apigw.Spec.ServiceLabel,
 	}
-	return &v1beta1.Ingress{
+
+	ingress := &v1beta1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      apigw.Spec.IngressName,
 			Namespace: apigw.Namespace,
@@ -298,27 +307,170 @@ func newIngress(apigw *apigatewayv1beta1.ApiGateway) *v1beta1.Ingress {
 				}),
 			},
 		},
-		Spec: v1beta1.IngressSpec{
-			Rules: []v1beta1.IngressRule{
+	}
+	services, err := kubernetesInformers.Core().V1().Services().Lister().Services(apigw.Namespace).List(selector{ServiceLabelValue: apigw.Spec.ServiceLabel})
+	log.Printf("Error occurred when listing Services for Label=Value %s=%s: %v", ServiceLabel, apigw.Spec.ServiceLabel, err)
+
+	var rules []v1beta1.IngressRule
+	rules = make([]v1beta1.IngressRule, 0)
+	if len(services) == 0 {
+		rules = append(rules,
+			v1beta1.IngressRule{
+				"testhost",
+				v1beta1.IngressRuleValue{},
+			})
+
+	} else {
+		for _, service := range services {
+			serviceHost := service.Labels[ServiceHostname]
+			if serviceHost == "" {
+				log.Printf("Service has no Label %s, using default", ServiceHostname)
+				serviceHost = "default"
+			}
+
+			servicePath := service.Labels[ServicePath]
+			if servicePath == "" {
+				log.Printf("Service has no Label %s, using default", ServicePath)
+				servicePath = "default"
+			}
+
+			rules = append(rules,
 				v1beta1.IngressRule{
-					"testhost",
-					v1beta1.IngressRuleValue{
+					Host: "testhost",
+					IngressRuleValue: v1beta1.IngressRuleValue{
 						HTTP: &v1beta1.HTTPIngressRuleValue{
 							Paths: []v1beta1.HTTPIngressPath{
 								v1beta1.HTTPIngressPath{
-									Path: "/test",
+									Path: "/" + servicePath,
 									Backend: v1beta1.IngressBackend{
-										ServiceName: "dummyservice-name",
+										ServiceName: service.Name,
 										ServicePort: intstr.IntOrString{
-											IntVal: 80,
+											IntVal: service.Spec.Ports[0].Port,
 										},
 									},
 								},
 							},
 						},
 					},
+				})
+
+		}
+	}
+
+	ingress.Spec.Rules = rules
+	return ingress
+}
+
+// newDeployment creates a new Deployment for a Foo resource. It also sets
+// the appropriate OwnerReferences on the resource so handleObject can discover
+// the Foo resource that 'owns' it.
+func (bc ApiGatewayController) addServiceToIngress(service *corev1.Service) {
+	servicelabelval := service.Labels[ServiceLabel]
+
+	ingresses, err := bc.lookupIngressesForServiceLabel(service.Namespace, servicelabelval)
+
+	log.Printf("Ingresses  Type of List%T", err)
+	if err != nil {
+		log.Printf("Error getting Ingress for ServiceLabel %s: %v", servicelabelval, err)
+		return
+	}
+	log.Printf("# of ingresses matching ServiceLabel of %d", len(ingresses))
+
+	serviceHost := service.Labels[ServiceHostname]
+	if serviceHost == "" {
+		log.Printf("Service has no Label %s, using default", ServiceHostname)
+		serviceHost = "default"
+	}
+
+	servicePath := service.Labels[ServicePath]
+	if servicePath == "" {
+		log.Printf("Service has no Label %s, using default", ServicePath)
+		servicePath = "default"
+	}
+
+	for _, ingress := range ingresses {
+		newIngress := ingress.DeepCopy()
+
+		rule := v1beta1.IngressRule{
+			serviceHost,
+			v1beta1.IngressRuleValue{
+				HTTP: &v1beta1.HTTPIngressRuleValue{
+					Paths: []v1beta1.HTTPIngressPath{
+						v1beta1.HTTPIngressPath{
+							Path: "/" + servicePath,
+							Backend: v1beta1.IngressBackend{
+								ServiceName: service.Name,
+								ServicePort: intstr.IntOrString{IntVal: service.Spec.Ports[0].Port},
+							},
+						},
+					},
 				},
 			},
-		},
+		}
+		newrules := append(newIngress.Spec.Rules, rule)
+		newIngress.Spec.Rules = newrules
+
+		// Update aufrufen
+		_, err := bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(service.Namespace).Update(newIngress)
+		log.Printf("Result of INgress Update: %v", err)
 	}
+	return newIngress
+
+}
+
+// newDeployment creates a new Deployment for a Foo resource. It also sets
+// the appropriate OwnerReferences on the resource so handleObject can discover
+// the Foo resource that 'owns' it.
+func (bc ApiGatewayController) deleteServiceFromIngress(service *corev1.Service) {
+	servicelabelval := service.Labels[ServiceLabel]
+
+	ingresses, err := bc.lookupIngressesForServiceLabel(service.Namespace, servicelabelval)
+
+	log.Printf("Ingresses  Type of List%T", err)
+	if err != nil {
+		log.Printf("Error getting Ingress for ServiceLabel %s: %v", servicelabelval, err)
+		return
+	}
+	log.Printf("# of ingresses matching ServiceLabel of %d", len(ingresses))
+
+	serviceHost := service.Labels[ServiceHostname]
+	if serviceHost == "" {
+		log.Printf("Service has no Label %s, using default", ServiceHostname)
+		serviceHost = "default"
+	}
+
+	servicePath := service.Labels[ServicePath]
+	if servicePath == "" {
+		log.Printf("Service has no Label %s, using default", ServicePath)
+		servicePath = "default"
+	}
+
+	for _, ingress := range ingresses {
+		newIngress := ingress.DeepCopy()
+
+		rule := v1beta1.IngressRule{
+			serviceHost,
+			v1beta1.IngressRuleValue{
+				HTTP: &v1beta1.HTTPIngressRuleValue{
+					Paths: []v1beta1.HTTPIngressPath{
+						v1beta1.HTTPIngressPath{
+							Path: "/" + servicePath,
+							Backend: v1beta1.IngressBackend{
+								ServiceName: service.Name,
+								ServicePort: intstr.IntOrString{IntVal: service.Spec.Ports[0].Port},
+							},
+						},
+					},
+				},
+			},
+		}
+		newrules := append(newIngress.Spec.Rules, rule)
+		newIngress.Spec.Rules = newrules
+
+		// Update aufrufen
+		_, err := bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(service.Namespace).Update(newIngress)
+		log.Printf("Result of INgress Update: %v", err)
+	}
+	return newIngress
+
 }

@@ -3,5 +3,6 @@ kind: ApiGateway
 metadata:
   name: apigateway-example2
 spec:
-  IngressName: "apigateway-example2-ingress"
+  ServiceLabel: "service1"
+  IngressName: "apigateway-ingress"
   foo: bar

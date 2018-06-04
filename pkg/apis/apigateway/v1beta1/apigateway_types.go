@@ -38,9 +38,7 @@ type ApiGateway struct {
 	Status ApiGatewayStatus `json:"status,omitempty"`
 }
 
-
 type Backend struct {
 	ServiceName string
 	ServicePort intstr.IntOrString
 }
-
