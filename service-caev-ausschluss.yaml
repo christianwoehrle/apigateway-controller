@@ -4,7 +4,7 @@ metadata:
   name: ausschluss-service
   labels:
     ServiceLabel: service1
-    ServiceHost: chrissishost
+    ServiceHostname: chrissishost
     ServicePath: "chrissispath"
 spec:
   selector:

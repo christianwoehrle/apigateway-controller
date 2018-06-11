@@ -182,8 +182,8 @@ func ProvideController(arguments args.InjectArgs) (*controller.GenericController
 			return cache.ResourceEventHandlerFuncs{
 				AddFunc: bc.AddService,
 				UpdateFunc: func(old, obj interface{}) {
-					log.Printf("Service Updated %T\n", obj)
-					log.Printf("Service Updated %s\n", obj.(*corev1.Service).Name)
+					log.Printf("Service Updated %T %s\n", obj, obj.(*corev1.Service).Name)
+					bc.DeleteService(obj)
 					//q.AddRateLimited(eventhandlers.MapToSelf(obj))
 				},
 				DeleteFunc: func(obj interface{}) {
@@ -231,8 +231,38 @@ func (bc ApiGatewayController) AddService(obj interface{}) {
 
 	log.Printf("Value of %s: %s\n", ServiceLabel, servicelabelval)
 
-	bc.addServiceToIngress(service)
+	changedIngresses := bc.addServiceToIngress(service)
 
+	for _, ingress := range changedIngresses {
+		bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(ingress.Namespace).Update(&ingress)
+	}
+}
+
+func (bc ApiGatewayController) DeleteService(obj interface{}) {
+	log.Printf("DeleteService called for Type %T\n", obj)
+	//q.AddRateLimited(eventhandlers.MapToSelf(obj))
+	service, ok := obj.(*corev1.Service)
+	if !ok {
+		log.Printf("Not of Type Service %T\n", obj)
+		return
+
+	}
+	log.Printf("Service %s was deleted in Namespace %s\n", service.Name, service.Namespace)
+
+	servicelabelval, ok := service.Labels[ServiceLabel]
+
+	if !ok {
+		log.Printf("No Label ServiceLabel in Service, skip processing event for Service: %s\n", service.Name)
+		return
+	}
+
+	log.Printf("Value of %s: %s\n", ServiceLabel, servicelabelval)
+
+	changedIngresses := bc.deleteServiceFromIngress(service)
+
+	for _, ingress := range changedIngresses {
+		bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(ingress.Namespace).Update(&ingress)
+	}
 }
 
 type selector struct {
@@ -364,17 +394,16 @@ func newIngress(kubernetesInformers informers.SharedInformerFactory, apigw *apig
 // newDeployment creates a new Deployment for a Foo resource. It also sets
 // the appropriate OwnerReferences on the resource so handleObject can discover
 // the Foo resource that 'owns' it.
-func (bc ApiGatewayController) addServiceToIngress(service *corev1.Service) {
+func (bc ApiGatewayController) addServiceToIngress(service *corev1.Service) []v1beta1.Ingress {
 	servicelabelval := service.Labels[ServiceLabel]
 
 	ingresses, err := bc.lookupIngressesForServiceLabel(service.Namespace, servicelabelval)
 
-	log.Printf("Ingresses  Type of List%T", err)
 	if err != nil {
 		log.Printf("Error getting Ingress for ServiceLabel %s: %v", servicelabelval, err)
-		return
+		return nil
 	}
-	log.Printf("# of ingresses matching ServiceLabel of %d", len(ingresses))
+	log.Printf("# of ingresses matching ServiceLabel %s : %d", servicelabelval, len(ingresses))
 
 	serviceHost := service.Labels[ServiceHostname]
 	if serviceHost == "" {
@@ -388,6 +417,7 @@ func (bc ApiGatewayController) addServiceToIngress(service *corev1.Service) {
 		servicePath = "default"
 	}
 
+	var newIngresses []v1beta1.Ingress
 	for _, ingress := range ingresses {
 		newIngress := ingress.DeepCopy()
 
@@ -411,32 +441,34 @@ func (bc ApiGatewayController) addServiceToIngress(service *corev1.Service) {
 		newIngress.Spec.Rules = newrules
 
 		// Update aufrufen
-		_, err := bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(service.Namespace).Update(newIngress)
-		log.Printf("Result of INgress Update: %v", err)
+		newIngresses = append(newIngresses, *newIngress)
 	}
-	return newIngress
+	return newIngresses
 
 }
 
-// newDeployment creates a new Deployment for a Foo resource. It also sets
-// the appropriate OwnerReferences on the resource so handleObject can discover
-// the Foo resource that 'owns' it.
-func (bc ApiGatewayController) deleteServiceFromIngress(service *corev1.Service) {
+// deleteServiceFromIngress removes a service from the ingresses that have registrerd this service
+func (bc ApiGatewayController) deleteServiceFromIngress(service *corev1.Service) []v1beta1.Ingress {
 	servicelabelval := service.Labels[ServiceLabel]
+
+	if len(servicelabelval) == 0 {
+		log.Printf("Info Service has no service Label and is not used in any ingress %v", servicelabelval)
+		return nil
+	}
 
 	ingresses, err := bc.lookupIngressesForServiceLabel(service.Namespace, servicelabelval)
 
 	log.Printf("Ingresses  Type of List%T", err)
 	if err != nil {
 		log.Printf("Error getting Ingress for ServiceLabel %s: %v", servicelabelval, err)
-		return
+		return nil
 	}
 	log.Printf("# of ingresses matching ServiceLabel of %d", len(ingresses))
 
 	serviceHost := service.Labels[ServiceHostname]
 	if serviceHost == "" {
 		log.Printf("Service has no Label %s, using default", ServiceHostname)
-		serviceHost = "default"
+		return nil
 	}
 
 	servicePath := service.Labels[ServicePath]
@@ -445,32 +477,34 @@ func (bc ApiGatewayController) deleteServiceFromIngress(service *corev1.Service)
 		servicePath = "default"
 	}
 
+	var changedIngresses []v1beta1.Ingress
 	for _, ingress := range ingresses {
+		changed := false
 		newIngress := ingress.DeepCopy()
+		for _, rule := range newIngress.Spec.Rules {
 
-		rule := v1beta1.IngressRule{
-			serviceHost,
-			v1beta1.IngressRuleValue{
-				HTTP: &v1beta1.HTTPIngressRuleValue{
-					Paths: []v1beta1.HTTPIngressPath{
-						v1beta1.HTTPIngressPath{
-							Path: "/" + servicePath,
-							Backend: v1beta1.IngressBackend{
-								ServiceName: service.Name,
-								ServicePort: intstr.IntOrString{IntVal: service.Spec.Ports[0].Port},
-							},
-						},
-					},
-				},
-			},
+			if rule.Host != serviceHost {
+				continue
+			}
+			var newIngressPaths []v1beta1.HTTPIngressPath
+			for _, path := range rule.HTTP.Paths {
+				if path.Path != servicePath {
+					newIngressPaths = append(newIngressPaths, path)
+				} else {
+					changed = true
+				}
+			}
+			if changed {
+				rule.HTTP.Paths = newIngressPaths
+			}
+
 		}
-		newrules := append(newIngress.Spec.Rules, rule)
-		newIngress.Spec.Rules = newrules
+		if changed {
+			changedIngresses = append(changedIngresses, *newIngress)
 
-		// Update aufrufen
-		_, err := bc.KubernetesClientSet.ExtensionsV1beta1().Ingresses(service.Namespace).Update(newIngress)
-		log.Printf("Result of INgress Update: %v", err)
+			log.Printf("Result of INgress Update: %v", err)
+		}
 	}
-	return newIngress
+	return changedIngresses
 
 }
