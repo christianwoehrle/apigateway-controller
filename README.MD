@@ -1,5 +1,8 @@
 #
 
+see https://github.com/kubernetes-sigs/kubebuilder
+
+
 ApiGateway specifies Attribute "ServiceLabel" with a certain Vaule x
 Controller creates an Ingress with Label "ServiceLabel" with Value x
 Services that have a Label ServiceLabel with Value x are added to the corresponding ingress
